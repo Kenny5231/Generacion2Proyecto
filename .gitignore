@@ -1,0 +1,29 @@
+# Configuracion real y secretos
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_*
+!*.pub.example
+
+# Datos de Gitea y respaldos
+data/
+config/
+backups/
+*.tar.gz
+*.tgz
+*.sha256
+*.bak
+*.bak-*
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.pre-restore-*
+
+# Paquetes y temporales
+*.zip
+tmp/
+.tools/
+.vscode/

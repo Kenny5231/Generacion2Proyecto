@@ -1,0 +1,101 @@
+# Gitea privado (rootless + SQLite) - Docker Compose V2
+#
+# Las variables se leen del archivo .env (generado por scripts/configure.sh).
+# No arranque este archivo sin .env: faltarian GITEA_VERSION, GITEA_TS_DNS, etc.
+#
+# Decisiones de seguridad:
+#  - Imagen rootless con version fija (el sufijo -rootless NO debe cambiarse: las
+#    imagenes rootless y rootful no son intercambiables).
+#  - Web (HTTP) y SSH de Git se publican SOLO en 127.0.0.1. Docker no depende de que
+#    Tailscale ya tenga IP al arrancar el servidor. La tailnet llega a ellos mediante
+#    Tailscale Serve (scripts/configure-tailscale.sh):
+#        HTTPS  <GITEA_TS_HTTPS_PORT>  ->  http://127.0.0.1:<GITEA_WEB_PORT>
+#        TCP    <GITEA_SSH_PORT>       ->  tcp://127.0.0.1:<GITEA_SSH_LOCAL_PORT>
+#  - Cuatro puertos distintos y configurables (evitan choques con otros servicios):
+#        GITEA_WEB_PORT        HTTP local (127.0.0.1)
+#        GITEA_SSH_LOCAL_PORT  SSH local (127.0.0.1)
+#        GITEA_SSH_PORT        SSH visible en la tailnet; es el que Gitea anuncia al clonar
+#        GITEA_TS_HTTPS_PORT   HTTPS de Tailscale Serve
+#    Dentro del contenedor el SSH integrado siempre escucha en 2222.
+#  - Sin privileged, sin socket Docker, sin network_mode host, sin Actions/runners.
+#  - No se define GITEA__security__INSTALL_LOCK: el asistente de primera instalacion
+#    debe poder ejecutarse; al terminar, Gitea escribe INSTALL_LOCK=true en app.ini.
+name: gitea-privado
+
+services:
+  gitea:
+    image: docker.gitea.com/gitea:${GITEA_VERSION:?Defina GITEA_VERSION en .env, por ejemplo 28.3.0}-rootless
+    container_name: ${GITEA_CONTAINER_NAME:-gitea-privado}
+    user: "1000:1000"
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-UTC}
+
+      # --- Servidor ---
+      GITEA__server__DOMAIN: ${GITEA_TS_DNS:?Defina GITEA_TS_DNS en .env (nombre DNS de Tailscale)}
+      GITEA__server__SSH_DOMAIN: ${GITEA_SSH_DOMAIN:?Defina GITEA_SSH_DOMAIN en .env}
+      GITEA__server__ROOT_URL: ${GITEA_ROOT_URL:?Defina GITEA_ROOT_URL en .env (https://...ts.net/)}
+      GITEA__server__HTTP_PORT: "3000"
+      GITEA__server__DISABLE_SSH: "false"
+      GITEA__server__START_SSH_SERVER: "true"
+      GITEA__server__SSH_PORT: ${GITEA_SSH_PORT:-2222}
+      GITEA__server__SSH_LISTEN_PORT: "2222"
+      GITEA__server__OFFLINE_MODE: "true"
+      GITEA__server__DISABLE_ROUTER_LOG: "true"
+
+      # --- Base de datos ---
+      GITEA__database__DB_TYPE: sqlite3
+      GITEA__database__PATH: /var/lib/gitea/data/gitea.db
+
+      # --- Repositorios privados ---
+      GITEA__repository__DEFAULT_PRIVATE: private
+      GITEA__repository__FORCE_PRIVATE: "true"
+
+      # --- Acceso y registro ---
+      GITEA__service__DISABLE_REGISTRATION: "true"
+      GITEA__service__REQUIRE_SIGNIN_VIEW: "true"
+      GITEA__service__DEFAULT_KEEP_EMAIL_PRIVATE: "true"
+      GITEA__service__DEFAULT_USER_VISIBILITY: private
+      GITEA__service__DEFAULT_ORG_VISIBILITY: private
+      GITEA__openid__ENABLE_OPENID_SIGNIN: "false"
+      GITEA__openid__ENABLE_OPENID_SIGNUP: "false"
+
+      # --- Funciones desactivadas ---
+      GITEA__actions__ENABLED: "false"
+      GITEA__security__DISABLE_GIT_HOOKS: "true"
+      GITEA__picture__DISABLE_GRAVATAR: "true"
+      GITEA__picture__ENABLE_FEDERATED_AVATAR: "false"
+      GITEA__other__SHOW_FOOTER_VERSION: "false"
+
+      # --- Registros: a consola, sin registro de accesos ---
+      GITEA__log__MODE: console
+      GITEA__log__LEVEL: Info
+      GITEA__log__ENABLE_ACCESS_LOG: "false"
+    volumes:
+      - ./data:/var/lib/gitea
+      - ./config:/etc/gitea
+    ports:
+      - "127.0.0.1:${GITEA_WEB_PORT:-3090}:3000"
+      - "127.0.0.1:${GITEA_SSH_LOCAL_PORT:-2222}:2222"
+    networks:
+      - gitea-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      # /api/healthz responde tambien durante el asistente de instalacion; devuelve 503 si la base de datos falla.
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:3000/api/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  gitea-net:
+    driver: bridge
